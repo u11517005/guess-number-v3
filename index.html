@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>猜數字遊戲版本三｜雲端存檔</title>
+<style>
+:root{--green:#587c67;--green2:#e8f0e9;--cream:#fbf8ef;--brown:#5b5146;--line:#dce5dc;--red:#b85c52}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#f7f5e9,#edf3ed);font-family:"Microsoft JhengHei",sans-serif;color:var(--brown);padding:24px}
+.wrap{max-width:1000px;margin:auto}.panel{background:#fffdf8;border:1px solid var(--line);border-radius:20px;padding:22px;margin:16px 0;box-shadow:0 8px 24px #526b5510}
+h1{color:var(--green);text-align:center;margin:8px 0} .sub{text-align:center;color:#81796e;margin-bottom:22px}
+h2{font-size:19px;color:var(--green);margin-top:0}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input{padding:12px;border:1px solid #cbd8cc;border-radius:10px;font-size:16px;min-width:0}
+button{border:0;border-radius:10px;padding:11px 16px;background:var(--green);color:white;font-size:15px;cursor:pointer}
+button.secondary{background:#e9eee8;color:var(--green)}button:disabled{opacity:.5;cursor:not-allowed}
+#guessInput{width:170px;letter-spacing:5px;font-size:22px;text-align:center}
+.status{padding:12px;border-radius:10px;background:var(--green2);margin:12px 0;line-height:1.6}
+.error{background:#f9e9e6;color:#98483f}.small{font-size:13px;color:#81796e;line-height:1.6}
+table{width:100%;border-collapse:collapse;margin-top:10px}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:center}th{color:var(--green);background:#f4f7f1}
+.game-item{border:1px solid var(--line);padding:12px;border-radius:12px;margin:8px 0;display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap}
+.pill{font-size:12px;padding:4px 8px;border-radius:20px;background:#edf2eb}.debug{display:flex;gap:8px;align-items:center}
+@media(max-width:600px){body{padding:12px}.panel{padding:16px}#guessInput{width:100%}.row button{flex:1}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🔢 猜數字遊戲版本三</h1>
+  <div class="sub">輸入識別碼，讓你的遊戲紀錄儲存在 Google 雲端試算表</div>
+
+  <section class="panel">
+    <h2>一、使用者識別碼</h2>
+    <div class="row">
+      <input id="userId" placeholder="請輸入識別碼（例如 cat123）" maxlength="40">
+      <button id="connectBtn">連線／讀取紀錄</button>
+    </div>
+    <p class="small">識別碼不是 Google 帳號登入，只是用來辨識資料。同一個識別碼會讀取同一份遊戲紀錄，請勿使用密碼或個人敏感資料。</p>
+    <div id="cloudStatus" class="status">尚未連線。請先輸入識別碼。</div>
+  </section>
+
+  <section class="panel">
+    <h2>二、目前遊戲</h2>
+    <div class="row">
+      <input id="guessInput" inputmode="numeric" maxlength="4" placeholder="四位數字">
+      <button id="guessBtn" disabled>送出猜測</button>
+      <button id="newGameBtn" class="secondary" disabled>開始新遊戲</button>
+    </div>
+    <div class="debug">
+      <input type="checkbox" id="debugToggle" disabled>
+      <label for="debugToggle">除錯模式（顯示本局答案）</label>
+      <strong id="answerText"></strong>
+    </div>
+    <div id="gameStatus" class="status">請先連線識別碼。</div>
+    <table><thead><tr><th>次數</th><th>猜測</th><th>結果</th><th>時間</th></tr></thead><tbody id="guessRows"><tr><td colspan="4">目前沒有猜測紀錄</td></tr></tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2>三、雲端遊戲紀錄</h2>
+    <p class="small">切換或開始新遊戲後，未完成的遊戲會保留在雲端；再次輸入相同識別碼，可繼續最近一局未完成的遊戲。</p>
+    <div id="historyList">尚無紀錄</div>
+  </section>
+</div>
+<script>
+const API_URL = "https://script.google.com/macros/s/AKfycbzPqkIpOXGNfOQsO1NOQ2XmBwCdUDoscDMuXLbuLWnNtSW6yE4RHpQxllpMrnBT2kLoiw/exec";
+let userId="", currentGame=null, games=[], busy=false, debugOn=false;
+
+const $=id=>document.getElementById(id);
+function setCloud(msg,error=false){$("cloudStatus").textContent=msg;$("cloudStatus").className="status"+(error?" error":"");}
+function setGame(msg,error=false){$("gameStatus").textContent=msg;$("gameStatus").className="status"+(error?" error":"");}
+function jsonp(params){
+  return new Promise((resolve,reject)=>{
+    if(!API_URL.startsWith("https://script.google.com/")){reject(new Error("請先設定 GAS 網址"));return;}
+    const cb="gas_cb_"+Date.now()+"_"+Math.floor(Math.random()*100000);
+    const script=document.createElement("script");
+    const timer=setTimeout(()=>{cleanup();reject(new Error("連線逾時，請確認 GAS 部署網址與權限"));},15000);
+    function cleanup(){clearTimeout(timer);delete window[cb];script.remove();}
+    window[cb]=(data)=>{cleanup();if(data&&data.ok)resolve(data);else reject(new Error(data?.error||"雲端操作失敗"));};
+    const q=new URLSearchParams({...params,userId,callback:cb});
+    script.src=API_URL+"?"+q.toString();
+    script.onerror=()=>{cleanup();reject(new Error("無法連線到 GAS，請檢查部署網址"));};
+    document.body.appendChild(script);
+  });
+}
+function makeGuessRows(guesses){
+  const body=$("guessRows");body.innerHTML="";
+  if(!guesses||!guesses.length){body.innerHTML='<tr><td colspan="4">目前沒有猜測紀錄</td></tr>';return;}
+  guesses.forEach((g,i)=>{const tr=document.createElement("tr");[i+1,g.guess,`${g.a}A${g.b}B`,g.time].forEach(v=>{const td=document.createElement("td");td.textContent=v;tr.appendChild(td);});body.appendChild(tr);});
+}
+function renderCurrent(){
+  if(!currentGame){setGame("目前沒有進行中的遊戲，請按「開始新遊戲」。");makeGuessRows([]);return;}
+  makeGuessRows(currentGame.guesses||[]);
+  const done=currentGame.status==="completed";
+  $("guessInput").disabled=done;$("guessBtn").disabled=done||busy;
+  $("newGameBtn").disabled=busy;
+  $("debugToggle").checked=debugOn;
+  setGame(done?`恭喜完成！答案是 ${currentGame.answer}。`: `本局已猜 ${currentGame.guesses.length} 次，請輸入四位不重複數字。`);
+}
+function renderHistory(){
+  const box=$("historyList");box.innerHTML="";
+  if(!games.length){box.textContent="尚無雲端遊戲紀錄";return;}
+  games.forEach(g=>{
+    const item=document.createElement("div");item.className="game-item";
+    const info=document.createElement("div");
+    const date=new Date(g.createdAt).toLocaleString("zh-TW");
+    info.textContent=`${date}｜${g.guesses.length} 次猜測`;
+    const pill=document.createElement("span");pill.className="pill";pill.textContent=g.status==="completed"?"已完成":"未完成";
+    const right=document.createElement("div");right.append(pill);
+    if(g.gameId!==currentGame?.gameId){
+      const btn=document.createElement("button");btn.className="secondary";btn.textContent="查看紀錄";
+      btn.onclick=()=>{currentGame=g;debugOn=false; $("answerText").textContent="";renderCurrent();setGame("目前正在查看舊遊戲紀錄（唯讀）。");$("guessInput").disabled=true;$("guessBtn").disabled=true;};right.append(btn);
+    }
+    item.append(info,right);box.append(item);
+  });
+}
+async function refreshData(){
+  const data=await jsonp({action:"load"});
+  games=data.games||[];
+  currentGame=data.currentGame||null;
+  if(currentGame){const full=games.find(g=>g.gameId===currentGame.gameId);if(full)currentGame=full;}
+  debugOn=false;$("answerText").textContent="";renderCurrent();renderHistory();
+  $("guessBtn").disabled=!currentGame||currentGame.status==="completed";
+  $("newGameBtn").disabled=false;$("debugToggle").disabled=!currentGame;
+}
+async function connect(){
+  const id=$("userId").value.trim();
+  if(!/^[A-Za-z0-9_-]{3,40}$/.test(id)){setCloud("識別碼需為 3～40 個英文字母、數字、底線或連字號。",true);return;}
+  userId=id;busy=true;$("connectBtn").disabled=true;setCloud("正在連線並讀取雲端資料……");
+  try{await refreshData();setCloud(`已連線成功！識別碼：${userId}。資料已從 Google 試算表讀取。`);}
+  catch(e){setCloud(e.message,true);}
+  finally{busy=false;$("connectBtn").disabled=false;$("guessBtn").disabled=!currentGame||currentGame.status==="completed";$("newGameBtn").disabled=false;}
+}
+async function startNew(){
+  if(!userId)return;
+  busy=true;$("newGameBtn").disabled=true;$("guessBtn").disabled=true;
+  try{const d=await jsonp({action:"newGame"});currentGame=d.game;await refreshData();setCloud("新遊戲已建立並儲存至雲端。");}
+  catch(e){setCloud(e.message,true);}
+  finally{busy=false;$("newGameBtn").disabled=false;renderCurrent();}
+}
+async function submitGuess(){
+  if(!currentGame||busy)return;
+  const guess=$("guessInput").value.trim();
+  if(!/^\d{4}$/.test(guess)){setGame("請輸入剛好四位數字（可包含開頭的 0）。",true);return;}
+  if(new Set(guess).size!==4){setGame("四個數字不可重複，請重新輸入。",true);return;}
+  busy=true;$("guessBtn").disabled=true;
+  try{
+    const d=await jsonp({action:"guess",gameId:currentGame.gameId,guess});
+    currentGame=d.game;$("guessInput").value="";await refreshData();
+    if(currentGame.status==="completed")setGame(`恭喜答對！答案是 ${currentGame.answer}，本局共猜 ${currentGame.guesses.length} 次。`);
+    else setGame(`結果：${d.result.a}A${d.result.b}B，已同步儲存至雲端。`);
+  }catch(e){setGame(e.message,true);}
+  finally{busy=false;renderCurrent();}
+}
+async function toggleDebug(){
+  debugOn=$("debugToggle").checked;$("answerText").textContent="";
+  if(!debugOn)return;
+  if(!currentGame)return;
+  try{const d=await jsonp({action:"debug",gameId:currentGame.gameId});$("answerText").textContent="答案："+d.answer;}
+  catch(e){debugOn=false;$("debugToggle").checked=false;setGame(e.message,true);}
+}
+$("connectBtn").onclick=connect;$("newGameBtn").onclick=startNew;$("guessBtn").onclick=submitGuess;$("debugToggle").onchange=toggleDebug;
+$("guessInput").addEventListener("keydown",e=>{if(e.key==="Enter")submitGuess();});
+</script>
+</body>
+</html>
